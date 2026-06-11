@@ -19,6 +19,10 @@ InjectPosition = Literal[
 ]
 
 _PREPEND_POSITIONS = frozenset({"system_start", "message_start"})
+_MSG_WRAPPED_RE = re.compile(
+    r'^<msg user="[^"]*" id="[^"]*">.*</msg>$',
+    re.DOTALL,
+)
 
 _WEEKDAY_ZH = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 _DEFAULT_TZ = "Asia/Shanghai"
@@ -28,6 +32,7 @@ _DEFAULT_TZ = "Asia/Shanghai"
 class EvalContext:
     user_message: str = ""
     user_id: str = ""
+    user_name: str = ""
     group_id: str = ""
     umo: str = ""
     session_id: str = ""
@@ -61,6 +66,38 @@ def resolve_timezone(raw: str | None) -> ZoneInfo:
 def today_key(timezone: str | None) -> str:
     """Return YYYY-MM-DD for the given timezone."""
     return datetime.now(resolve_timezone(timezone)).strftime("%Y-%m-%d")
+
+
+def _xml_attr(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+    )
+
+
+def _xml_text(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def is_msg_wrapped(text: str) -> bool:
+    return bool(_MSG_WRAPPED_RE.fullmatch((text or "").strip()))
+
+
+def wrap_user_message(*, user: str, user_id: str, text: str) -> str:
+    """Wrap user text as <msg user=\"...\" id=\"...\">...</msg>."""
+    body = text if text is not None else ""
+    if is_msg_wrapped(body):
+        return body
+    return (
+        f'<msg user="{_xml_attr(user)}" id="{_xml_attr(user_id)}">'
+        f"{_xml_text(body)}"
+        "</msg>"
+    )
 
 
 def load_rules_from_path(path: Path) -> dict[str, Any]:
@@ -130,6 +167,7 @@ def _render_template(template: str, ctx: EvalContext) -> str:
         "time": now.strftime("%H:%M:%S"),
         "weekday": _WEEKDAY_ZH[weekday_idx],
         "user_id": ctx.user_id,
+        "user_name": ctx.user_name,
         "group_id": ctx.group_id,
         "umo": ctx.umo,
         "session_id": ctx.session_id,

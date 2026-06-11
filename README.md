@@ -2,7 +2,22 @@
 
 AstrBot 插件：在 **LLM 请求前**（`on_llm_request`）按 `rules.json` 注入上下文。
 
-## 日更注入（省 token）
+## 用户消息格式
+
+每次 LLM 请求会将本轮 `prompt` 包装为：
+
+```xml
+<msg user="老王" id="22323xxx">忘崽你会画画吗</msg>
+```
+
+- `user`：发送者昵称（`event.get_sender_name()`）
+- `id`：发送者 ID（`event.get_sender_id()`）
+- 正文：原始用户输入；属性与正文中的 `&` `<` `>` `"` 会转义
+- 已是该格式时不会重复包装（避免工具循环重入时叠层）
+
+规则条件 `when` 仍按**包装前**的原文匹配；`{{user_message}}` 等占位符也用原文。
+
+## 日更注入
 
 每个会话（`session_id`，否则回退 `umo`）**每天只注入一次**：
 
@@ -65,7 +80,7 @@ AstrBot 插件：在 **LLM 请求前**（`on_llm_request`）按 `rules.json` 注
 |------|------|
 | `position` | `system_start` / `system_end` / `message_start` / `message_end` |
 | `ephemeral` | 仅 `message_end` 有效；为真时不写入会话历史 |
-| `template` | `{{date}}` `{{weekday}}` `{{datetime}}` `{{user_id}}` `{{group_id}}` 等 |
+| `template` | `{{date}}` `{{weekday}}` `{{user_name}}` `{{user_id}}` `{{group_id}}` `{{user_message}}` 等 |
 
 日更 + 需当天后续轮次仍记得注入内容：优先 `message_start` 或 `message_end` 且 `ephemeral: false`（写入会话历史）。`system_end` 仅影响当日首条请求的 system，后续轮次 system 不再携带该段。
 

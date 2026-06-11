@@ -14,7 +14,14 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 
-from .engine import EvalContext, InjectBlock, evaluate_rules, load_rules_from_path, today_key
+from .engine import (
+    EvalContext,
+    InjectBlock,
+    evaluate_rules,
+    load_rules_from_path,
+    today_key,
+    wrap_user_message,
+)
 
 _ROOT = Path(__file__).resolve().parent
 _SAMPLE_RULES = _ROOT / "sample_rules.json"
@@ -91,15 +98,28 @@ class InfoInjectionStar(Star):
         dates[session_key] = today
         await self.put_kv_data(_KV_DAILY_DATES, dates)
 
+    def _wrap_user_prompt(self, event: AstrMessageEvent, req: ProviderRequest) -> str:
+        raw = req.prompt if req.prompt is not None else ""
+        wrapped = wrap_user_message(
+            user=event.get_sender_name(),
+            user_id=str(event.get_sender_id()),
+            text=raw,
+        )
+        req.prompt = wrapped
+        return raw
+
     def _build_eval_context(
         self,
         event: AstrMessageEvent,
         req: ProviderRequest,
+        *,
+        raw_user_message: str,
     ) -> EvalContext:
         group_id = str(event.get_group_id() or "").strip()
         return EvalContext(
-            user_message=(req.prompt or "").strip(),
+            user_message=raw_user_message.strip(),
             user_id=str(event.get_sender_id()),
+            user_name=event.get_sender_name(),
             group_id=group_id,
             umo=str(event.unified_msg_origin),
             session_id=self._session_key(event, req),
@@ -192,19 +212,25 @@ class InfoInjectionStar(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         try:
+            raw_user_message = self._wrap_user_prompt(event, req)
+
             tz = self._timezone(event)
             today = today_key(tz)
             session_key = self._session_key(event, req)
 
             if await self._already_injected_today(session_key, today):
                 logger.debug(
-                    "InfoInjection: skip (already injected today) session=%s date=%s",
+                    "InfoInjection: skip inject (already today) session=%s date=%s",
                     session_key,
                     today,
                 )
                 return
 
-            ctx = self._build_eval_context(event, req)
+            ctx = self._build_eval_context(
+                event,
+                req,
+                raw_user_message=raw_user_message,
+            )
             blocks = evaluate_rules(self._rules_doc(), ctx)
             if not blocks:
                 return
