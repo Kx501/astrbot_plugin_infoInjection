@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from dataclasses import dataclass, field
@@ -16,13 +17,11 @@ InjectPosition = Literal[
     "system_end",
     "message_start",
     "message_end",
+    "message_replace",
 ]
 
 _PREPEND_POSITIONS = frozenset({"system_start", "message_start"})
-_MSG_WRAPPED_RE = re.compile(
-    r'^<msg user="[^"]*" id="[^"]*">.*</msg>$',
-    re.DOTALL,
-)
+RuleSchedule = Literal["daily", "always"]
 
 _WEEKDAY_ZH = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 _DEFAULT_TZ = "Asia/Shanghai"
@@ -32,7 +31,7 @@ _DEFAULT_TZ = "Asia/Shanghai"
 class EvalContext:
     user_message: str = ""
     user_id: str = ""
-    user_name: str = ""
+    user_nickname: str = ""
     group_id: str = ""
     umo: str = ""
     session_id: str = ""
@@ -54,6 +53,10 @@ class InjectBlock:
     def is_prepend(self) -> bool:
         return self.position in _PREPEND_POSITIONS
 
+    @property
+    def is_replace(self) -> bool:
+        return self.position == "message_replace"
+
 
 def resolve_timezone(raw: str | None) -> ZoneInfo:
     text = (raw or "").strip() or _DEFAULT_TZ
@@ -66,38 +69,6 @@ def resolve_timezone(raw: str | None) -> ZoneInfo:
 def today_key(timezone: str | None) -> str:
     """Return YYYY-MM-DD for the given timezone."""
     return datetime.now(resolve_timezone(timezone)).strftime("%Y-%m-%d")
-
-
-def _xml_attr(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-    )
-
-
-def _xml_text(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
-def is_msg_wrapped(text: str) -> bool:
-    return bool(_MSG_WRAPPED_RE.fullmatch((text or "").strip()))
-
-
-def wrap_user_message(*, user: str, user_id: str, text: str) -> str:
-    """Wrap user text as <msg user=\"...\" id=\"...\">...</msg>."""
-    body = text if text is not None else ""
-    if is_msg_wrapped(body):
-        return body
-    return (
-        f'<msg user="{_xml_attr(user)}" id="{_xml_attr(user_id)}">'
-        f"{_xml_text(body)}"
-        "</msg>"
-    )
 
 
 def load_rules_from_path(path: Path) -> dict[str, Any]:
@@ -123,6 +94,21 @@ def _as_str_set(values: Any) -> set[str]:
     if not isinstance(values, list):
         return set()
     return {str(item).strip() for item in values if str(item).strip()}
+
+
+def _xml_attr(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def _xml_text(value: str) -> str:
+    return html.escape(value, quote=False)
+
+
+def _normalize_schedule(rule: dict[str, Any]) -> RuleSchedule:
+    raw = str(rule.get("schedule") or "daily").strip().lower()
+    if raw == "always":
+        return "always"
+    return "daily"
 
 
 def _rule_matches(when: dict[str, Any], ctx: EvalContext) -> bool:
@@ -167,7 +153,10 @@ def _render_template(template: str, ctx: EvalContext) -> str:
         "time": now.strftime("%H:%M:%S"),
         "weekday": _WEEKDAY_ZH[weekday_idx],
         "user_id": ctx.user_id,
-        "user_name": ctx.user_name,
+        "user_nickname": ctx.user_nickname,
+        "user": _xml_attr(ctx.user_nickname or ctx.user_id),
+        "id": _xml_attr(ctx.user_id),
+        "content": _xml_text(ctx.user_message),
         "group_id": ctx.group_id,
         "umo": ctx.umo,
         "session_id": ctx.session_id,
@@ -187,7 +176,13 @@ def _render_template(template: str, ctx: EvalContext) -> str:
 
 
 _VALID_POSITIONS = frozenset(
-    {"system_start", "system_end", "message_start", "message_end"}
+    {
+        "system_start",
+        "system_end",
+        "message_start",
+        "message_end",
+        "message_replace",
+    }
 )
 
 
@@ -198,7 +193,12 @@ def _normalize_position(inject: dict[str, Any]) -> InjectPosition | None:
     return None
 
 
-def evaluate_rules(rules_doc: dict[str, Any], ctx: EvalContext) -> list[InjectBlock]:
+def evaluate_rules(
+    rules_doc: dict[str, Any],
+    ctx: EvalContext,
+    *,
+    schedule: RuleSchedule | None = None,
+) -> list[InjectBlock]:
     rules = rules_doc.get("rules")
     if not isinstance(rules, list):
         return []
@@ -206,6 +206,10 @@ def evaluate_rules(rules_doc: dict[str, Any], ctx: EvalContext) -> list[InjectBl
     blocks: list[InjectBlock] = []
     for rule in _sort_rules([r for r in rules if isinstance(r, dict)]):
         if not rule.get("enabled", True):
+            continue
+
+        rule_schedule = _normalize_schedule(rule)
+        if schedule is not None and rule_schedule != schedule:
             continue
 
         rid = str(rule.get("id") or "").strip() or "unnamed"

@@ -20,7 +20,6 @@ from .engine import (
     evaluate_rules,
     load_rules_from_path,
     today_key,
-    wrap_user_message,
 )
 
 _ROOT = Path(__file__).resolve().parent
@@ -98,28 +97,26 @@ class InfoInjectionStar(Star):
         dates[session_key] = today
         await self.put_kv_data(_KV_DAILY_DATES, dates)
 
-    def _wrap_user_prompt(self, event: AstrMessageEvent, req: ProviderRequest) -> str:
-        raw = req.prompt if req.prompt is not None else ""
-        wrapped = wrap_user_message(
-            user=event.get_sender_name(),
-            user_id=str(event.get_sender_id()),
-            text=raw,
-        )
-        req.prompt = wrapped
-        return raw
+    def _user_nickname(self, event: AstrMessageEvent) -> str:
+        try:
+            sender = event.message_obj.sender
+            name = getattr(sender, "nickname", None) or getattr(sender, "user_id", None)
+            if name:
+                return str(name).strip()
+        except Exception:
+            pass
+        return str(event.get_sender_id())
 
     def _build_eval_context(
         self,
         event: AstrMessageEvent,
         req: ProviderRequest,
-        *,
-        raw_user_message: str,
     ) -> EvalContext:
         group_id = str(event.get_group_id() or "").strip()
         return EvalContext(
-            user_message=raw_user_message.strip(),
+            user_message=(req.prompt or "").strip(),
             user_id=str(event.get_sender_id()),
-            user_name=event.get_sender_name(),
+            user_nickname=self._user_nickname(event),
             group_id=group_id,
             umo=str(event.unified_msg_origin),
             session_id=self._session_key(event, req),
@@ -129,27 +126,30 @@ class InfoInjectionStar(Star):
         )
 
     def _apply_blocks(self, req: ProviderRequest, blocks: list[InjectBlock]) -> None:
-        prepends = sorted(
-            (b for b in blocks if b.is_prepend),
-            key=lambda b: b.priority,
-        )
-        appends = sorted(
-            (b for b in blocks if not b.is_prepend),
-            key=lambda b: -b.priority,
-        )
+        replace_blocks = [b for b in blocks if b.is_replace]
+        if replace_blocks:
+            best = max(replace_blocks, key=lambda b: b.priority)
+            self._apply_one(req, best)
+
+        others = [b for b in blocks if not b.is_replace]
+        prepends = sorted((b for b in others if b.is_prepend), key=lambda b: b.priority)
+        appends = sorted((b for b in others if not b.is_prepend), key=lambda b: -b.priority)
 
         for block in prepends:
-            self._apply_one(req, block, prepend=True)
+            self._apply_one(req, block)
         for block in appends:
-            self._apply_one(req, block, prepend=False)
+            self._apply_one(req, block)
 
-    def _apply_one(
-        self,
-        req: ProviderRequest,
-        block: InjectBlock,
-        *,
-        prepend: bool,
-    ) -> None:
+    def _apply_one(self, req: ProviderRequest, block: InjectBlock) -> None:
+        if block.position == "message_replace":
+            user_text = (req.prompt or "").strip()
+            if not user_text:
+                return
+            if user_text.startswith("<msg ") and "</msg>" in user_text:
+                return
+            req.prompt = block.text
+            return
+
         if block.position == "system_start":
             if req.system_prompt:
                 req.system_prompt = f"{block.text}\n{req.system_prompt.lstrip()}"
@@ -212,36 +212,40 @@ class InfoInjectionStar(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         try:
-            raw_user_message = self._wrap_user_prompt(event, req)
-
             tz = self._timezone(event)
             today = today_key(tz)
             session_key = self._session_key(event, req)
+            doc = self._rules_doc()
+            ctx = self._build_eval_context(event, req)
 
-            if await self._already_injected_today(session_key, today):
-                logger.debug(
-                    "InfoInjection: skip inject (already today) session=%s date=%s",
-                    session_key,
-                    today,
-                )
+            applied: list[InjectBlock] = []
+
+            always_blocks = evaluate_rules(doc, ctx, schedule="always")
+            if always_blocks:
+                self._apply_blocks(req, always_blocks)
+                applied.extend(always_blocks)
+
+            daily_blocks: list[InjectBlock] = []
+            if not await self._already_injected_today(session_key, today):
+                daily_blocks = evaluate_rules(doc, ctx, schedule="daily")
+                if daily_blocks:
+                    self._apply_blocks(req, daily_blocks)
+                    applied.extend(daily_blocks)
+                    await self._mark_injected_today(session_key, today)
+
+            if not applied:
                 return
 
-            ctx = self._build_eval_context(
+            self._record_injection(
                 event,
-                req,
-                raw_user_message=raw_user_message,
+                today=today,
+                session_key=session_key,
+                blocks=applied,
             )
-            blocks = evaluate_rules(self._rules_doc(), ctx)
-            if not blocks:
-                return
-
-            self._apply_blocks(req, blocks)
-            await self._mark_injected_today(session_key, today)
-            self._record_injection(event, today=today, session_key=session_key, blocks=blocks)
             logger.info(
-                "InfoInjection: daily inject %s block(s) rules=%s session=%s date=%s",
-                len(blocks),
-                [b.rule_id for b in blocks],
+                "InfoInjection: applied %s block(s) rules=%s session=%s date=%s",
+                len(applied),
+                [b.rule_id for b in applied],
                 session_key,
                 today,
             )
