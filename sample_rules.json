@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "daily_date",
+      "enabled": true,
+      "priority": 10,
+      "when": {
+        "chat": "any"
+      },
+      "inject": {
+        "position": "system_end",
+        "ephemeral": false,
+        "template": "<dynamic_context>\n今日日期：{{date}}\n星期：{{weekday}}\n</dynamic_context>"
+      }
+    },
+    {
+      "id": "group_hint",
+      "enabled": false,
+      "priority": 5,
+      "when": {
+        "chat": "group"
+      },
+      "inject": {
+        "position": "message_start",
+        "ephemeral": false,
+        "template": "<group_context>\n当前为群聊，群号：{{group_id}}\n</group_context>"
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+name: astrbot_plugin_info_injection
+display_name: InfoInjection
+version: "0.2.0"
+author: "Kx501"
+desc: 修改LLM请求上下文的插件。
+repo: "https://github.com/Kx501/astrbot_plugin_info_injection"
+tags: ["LLM", "上下文"]
