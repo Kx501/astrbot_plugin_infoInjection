@@ -24,7 +24,8 @@ from .engine import (
 
 _ROOT = Path(__file__).resolve().parent
 _SAMPLE_RULES = _ROOT / "sample_rules.json"
-_EXTRA_INJECTED = "_ii_injected"
+_PLUGIN_NAME = "astrbot_plugin_infoinjection"
+_INJECTION_EXTRA = "_md_injection"
 _KV_DAILY_DATES = "daily_inject_dates"
 
 
@@ -191,8 +192,9 @@ class InfoInjectionStar(Star):
         blocks: list[InjectBlock],
     ) -> None:
         event.set_extra(
-            _EXTRA_INJECTED,
+            _INJECTION_EXTRA,
             {
+                "source": _PLUGIN_NAME,
                 "date": today,
                 "session_key": session_key,
                 "rule_ids": [b.rule_id for b in blocks],
@@ -203,6 +205,7 @@ class InfoInjectionStar(Star):
                         "ephemeral": b.ephemeral,
                         "priority": b.priority,
                         "text_len": len(b.text),
+                        "text": b.text,
                     }
                     for b in blocks
                 ],

@@ -95,9 +95,9 @@ AstrBot 插件：在 **LLM 请求前**（`on_llm_request`）按 `rules.json` 注
 
 日更记录：KV 键 `daily_inject_dates`（`{session_key: "YYYY-MM-DD"}`）。
 
-## 与 MsgProcessor 联动
+## 与 MsgDebugger 联动
 
-注入后写入 `event.extra["_ii_injected"]`。
+注入后按 MsgDebugger 插件 README「插件集成：Injection Trace 约定」写入 `event.extra["_md_injection"]`（含 `source`、`rule_ids`、`blocks` 等）。
 
 ## 本地调试
 
